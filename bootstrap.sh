@@ -68,7 +68,7 @@ print(version)
 PY
 )
 ARCHIVE="routly-node-$VERSION-linux-amd64.tar.gz"
-BASE="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+BASE="$RAW_URL/releases/v$VERSION"
 
 say "Descargando Routly $VERSION"
 curl -fL --retry 3 --retry-all-errors "$BASE/$ARCHIVE" -o "$WORK/$ARCHIVE"
