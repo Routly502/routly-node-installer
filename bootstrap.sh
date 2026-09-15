@@ -126,7 +126,7 @@ say "Validando e instalando Routly"
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 printf '\nRoutly %s quedó instalado.\n' "$VERSION"
-printf 'Abra: http://%s/\n' "${SERVER_IP:-localhost}"
+printf 'Abra: http://%s/admin\n' "${SERVER_IP:-localhost}"
 printf 'Usuario inicial: admin\n'
 printf 'Contraseña temporal: %s\n' "$ADMIN_PASSWORD"
 printf 'Debe cambiar la contraseña al iniciar sesión por primera vez.\n'
