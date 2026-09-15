@@ -132,6 +132,17 @@ if [[ -f "$STAGE/usr/bin/routly-migration-plan.mjs" ]]; then
   install_file "$STAGE/usr/bin/routly-migration-plan.mjs" "$ROOT/usr/bin/routly-migration-plan.mjs" 0644
 fi
 ln -sfn -- /etc/nginx/sites-available/routly.conf "$ROOT/etc/nginx/sites-enabled/routly.conf"
+# Ubuntu enables its welcome site by default. On a dedicated Routly Node host it
+# would otherwise win the catch-all request before Routly's server block.
+default_site="$ROOT/etc/nginx/sites-enabled/default"
+if [[ -L "$default_site" ]]; then
+  default_target=$(readlink "$default_site")
+  case "$default_target" in
+    /etc/nginx/sites-available/default|../sites-available/default)
+      rm -f -- "$default_site"
+      ;;
+  esac
+fi
 for f in "$STAGE/usr/lib/tmpfiles.d/routly.conf" "$STAGE/usr/lib/sysusers.d/routly.conf"; do
   [[ -f "$f" ]] && install_file "$f" "$ROOT/${f#"$STAGE/"}" 0644
 done
