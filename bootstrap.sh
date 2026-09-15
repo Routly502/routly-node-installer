@@ -7,25 +7,49 @@ REPOSITORY=${ROUTLY_DISTRIBUTION_REPOSITORY:-Routly502/routly-node-installer}
 API_URL="https://api.github.com/repos/$REPOSITORY/releases/latest"
 RAW_URL="https://raw.githubusercontent.com/$REPOSITORY/main"
 WORK=
+ROOT=${ROUTLY_FILESYSTEM_ROOT:-/}
+ROOT=${ROOT%/}
+[[ -n "$ROOT" ]] || ROOT=/
+ETC_ROUTLY="$ROOT/etc/routly"
+OPT_ROUTLY="$ROOT/opt/routly"
+OS_RELEASE="$ROOT/etc/os-release"
 
 say() { printf '\n==> %s\n' "$*"; }
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 cleanup() { [[ -z "${WORK:-}" ]] || rm -rf -- "$WORK"; }
+read_masked() {
+  local prompt=$1 value= char=
+  printf '%s' "$prompt" >/dev/tty
+  while IFS= read -r -s -n 1 char </dev/tty; do
+    [[ -n "$char" ]] || break
+    if [[ "$char" == $'\177' || "$char" == $'\b' ]]; then
+      if [[ -n "$value" ]]; then
+        value=${value%?}
+        printf '\b \b' >/dev/tty
+      fi
+    else
+      value+=$char
+      printf '*' >/dev/tty
+    fi
+  done
+  printf '\n' >/dev/tty
+  REPLY=$value
+}
 trap cleanup EXIT
 
-[[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] ||
+[[ ${ROUTLY_TEST_MODE:-0} == 1 || "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] ||
   fail "Routly requiere Linux amd64."
-[[ $EUID -eq 0 ]] || fail "Ejecute este comando con sudo."
-[[ -r /etc/os-release ]] || fail "No se pudo identificar Ubuntu."
-. /etc/os-release
+[[ ${ROUTLY_TEST_MODE:-0} == 1 || $EUID -eq 0 ]] || fail "Ejecute este comando con sudo."
+[[ -r "$OS_RELEASE" ]] || fail "No se pudo identificar Ubuntu."
+. "$OS_RELEASE"
 [[ ${ID:-} == ubuntu ]] || fail "Routly requiere Ubuntu."
 awk -v v="${VERSION_ID:-0}" 'BEGIN { exit !(v+0 >= 22.04) }' ||
   fail "Routly requiere Ubuntu 22.04 o una versión posterior."
-[[ ! -e /opt/routly/current ]] ||
+[[ ! -e "$OPT_ROUTLY/current" ]] ||
   fail "Routly ya está instalado. Use el actualizador desde Routly Control."
 PARTIAL_INSTALL=0
-if [[ -e /etc/routly/routly.env ]]; then
-  [[ -s /etc/routly/bootstrap-enrollment.json ]] ||
+if [[ -e "$ETC_ROUTLY/routly.env" ]]; then
+  [[ -s "$ETC_ROUTLY/bootstrap-enrollment.json" ]] ||
     fail "Ya existe una configuración local. No se sobrescribió ninguna credencial."
   PARTIAL_INSTALL=1
 fi
@@ -64,13 +88,13 @@ SQL
 fi
 
 WORK=$(mktemp -d /tmp/routly-bootstrap.XXXXXX)
-install -d -m 0750 /etc/routly
-if [[ -s /etc/routly/bootstrap-enrollment.json ]]; then
+install -d -m 0750 "$ETC_ROUTLY"
+if [[ -s "$ETC_ROUTLY/bootstrap-enrollment.json" ]]; then
   say "Reutilizando la inscripción segura de un intento anterior"
-  cp /etc/routly/bootstrap-enrollment.json "$WORK/enrollment.json"
-elif [[ -s /etc/routly/bootstrap-enrollment-request.json ]]; then
+  cp "$ETC_ROUTLY/bootstrap-enrollment.json" "$WORK/enrollment.json"
+elif [[ -s "$ETC_ROUTLY/bootstrap-enrollment-request.json" ]]; then
   say "Reintentando el canje seguro de un intento anterior"
-  cp /etc/routly/bootstrap-enrollment-request.json "$WORK/enroll-request.json"
+  cp "$ETC_ROUTLY/bootstrap-enrollment-request.json" "$WORK/enroll-request.json"
   CONTROL_URL=$(python3 - "$WORK/enroll-request.json" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["controlUrl"])
@@ -83,12 +107,15 @@ PY
     -o "$WORK/enrollment.json" ||
     fail "Routly Control rechazó el código o no está disponible."
   chmod 0600 "$WORK/enrollment.json"
-  install -m 0600 "$WORK/enrollment.json" /etc/routly/bootstrap-enrollment.json
-  rm -f /etc/routly/bootstrap-enrollment-request.json
+  install -m 0600 "$WORK/enrollment.json" "$ETC_ROUTLY/bootstrap-enrollment.json"
+  rm -f "$ETC_ROUTLY/bootstrap-enrollment-request.json"
 else
-  printf 'Código de activación: '
-  IFS= read -r -s ENROLLMENT_CODE </dev/tty || fail "No se pudo leer el código de activación."
-  printf '\n'
+  if [[ ${ROUTLY_TEST_MODE:-0} == 1 && -n ${ROUTLY_TEST_ENROLLMENT_CODE:-} ]]; then
+    ENROLLMENT_CODE=$ROUTLY_TEST_ENROLLMENT_CODE
+  else
+    read_masked 'Código de activación: ' || fail "No se pudo leer el código de activación."
+    ENROLLMENT_CODE=$REPLY
+  fi
   [[ "$ENROLLMENT_CODE" == rly1.*.* ]] || fail "El código de activación no tiene un formato válido."
   CONTROL_PART=${ENROLLMENT_CODE#rly1.}
   CONTROL_PART=${CONTROL_PART%%.*}
@@ -111,7 +138,7 @@ path = sys.argv[1]
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, "w", encoding="utf-8") as output:
     json.dump({"secret": sys.stdin.read(), "redemptionId": sys.argv[2], "controlUrl": sys.argv[3]}, output)' "$WORK/enroll-request.json" "$REDEMPTION_ID" "$CONTROL_URL"
-  install -m 0600 "$WORK/enroll-request.json" /etc/routly/bootstrap-enrollment-request.json
+  install -m 0600 "$WORK/enroll-request.json" "$ETC_ROUTLY/bootstrap-enrollment-request.json"
   unset ENROLLMENT_CODE ENROLLMENT_SECRET CONTROL_PART REDEMPTION_ID
   say "Vinculando esta instalación con Routly Control"
   curl -fsS --proto '=https' --tlsv1.2 \
@@ -121,8 +148,8 @@ with os.fdopen(fd, "w", encoding="utf-8") as output:
     -o "$WORK/enrollment.json" ||
     fail "Routly Control rechazó el código o no está disponible."
   chmod 0600 "$WORK/enrollment.json"
-  install -m 0600 "$WORK/enrollment.json" /etc/routly/bootstrap-enrollment.json
-  rm -f /etc/routly/bootstrap-enrollment-request.json
+  install -m 0600 "$WORK/enrollment.json" "$ETC_ROUTLY/bootstrap-enrollment.json"
+  rm -f "$ETC_ROUTLY/bootstrap-enrollment-request.json"
 fi
 
 say "Localizando el último Routly Node publicado"
@@ -162,7 +189,7 @@ if [[ $PARTIAL_INSTALL == 1 ]]; then
 else
 SESSION_SECRET=$(openssl rand -hex 48)
 ADMIN_PASSWORD=$(openssl rand -base64 24 | tr -d '\n' | tr '/+' '_-')
-python3 - "$WORK/enrollment.json" /etc/routly/enrollment.env /etc/routly/release-signing-public.pem <<'PY'
+  python3 - "$WORK/enrollment.json" "$ETC_ROUTLY/enrollment.env" "$ETC_ROUTLY/release-signing-public.pem" <<'PY'
 import base64, json, os, re, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 required = ("controlUrl", "installationId", "activationSecret", "installationToken",
@@ -210,8 +237,8 @@ with open(sys.argv[3], "wb") as output:
 os.chmod(sys.argv[2], 0o600)
 os.chmod(sys.argv[3], 0o644)
 PY
-. /etc/routly/enrollment.env
-cat > /etc/routly/routly.env <<EOF
+. "$ETC_ROUTLY/enrollment.env"
+cat > "$ETC_ROUTLY/routly.env" <<EOF
 NODE_ENV=production
 HOST=127.0.0.1
 PORT=4100
@@ -241,14 +268,15 @@ PUBLIC_OBJECT_SEARCH_PATHS=
 ROUTER_ALERT_EMAIL_WEBHOOK_URL=
 ROUTER_ALERT_SMS_WEBHOOK_URL=
 EOF
-chmod 0640 /etc/routly/routly.env
-rm -f /etc/routly/enrollment.env
+chmod 0640 "$ETC_ROUTLY/routly.env"
+rm -f "$ETC_ROUTLY/enrollment.env"
 unset ROUTLY_ACTIVATION_SECRET ROUTLY_CONTROL_INSTALLATION_TOKEN
+[[ ${ROUTLY_TEST_INTERRUPT_AFTER_ENV:-0} != 1 ]] || fail "Interrupción de prueba después de escribir routly.env."
 fi
 
 say "Validando e instalando Routly"
 "$WORK/install.sh" "$WORK/$ARCHIVE" "$EXPECTED"
-rm -f /etc/routly/bootstrap-enrollment.json
+rm -f "$ETC_ROUTLY/bootstrap-enrollment.json"
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 printf '\nRoutly %s quedó instalado.\n' "$VERSION"
