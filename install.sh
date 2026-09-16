@@ -103,6 +103,19 @@ mkdir -p "$(dirname "$RELEASE")"
 cp -a --no-preserve=ownership "$STAGE/opt/routly/releases/$VERSION" "$ROOT/opt/routly/releases/"
 chown -R root:root -- "$RELEASE" 2>/dev/null || [[ ${ROUTLY_TEST_MODE:-0} == 1 ]]
 find "$RELEASE" -type d -exec chmod 0755 {} +
+# Keep host identity outside the database and create it before either service
+# can start. Atomic creation preserves an identity supplied by an older install.
+INSTANCE_ID_FILE="$ROOT/etc/routly/instance-id"
+mkdir -p "$(dirname "$INSTANCE_ID_FILE")"
+if [[ -e "$INSTANCE_ID_FILE" ]]; then
+  [[ -f "$INSTANCE_ID_FILE" && "$(stat -c '%a' "$INSTANCE_ID_FILE")" == 600 &&
+     ( ${ROUTLY_TEST_MODE:-0} == 1 || "$(stat -c '%u' "$INSTANCE_ID_FILE")" == 0 ) ]] ||
+    { echo "Unsafe existing Routly instance identity" >&2; exit 1; }
+else
+  tmp_instance="$ROOT/etc/routly/.instance-id.$$"
+  (umask 077; openssl rand -hex 32 > "$tmp_instance")
+  mv -f -- "$tmp_instance" "$INSTANCE_ID_FILE"
+fi
 find "$RELEASE" -type f -exec chmod 0644 {} +
 ln -s -- "/opt/routly/releases/$VERSION" "$CURRENT_TMP"
 mv -Tf -- "$CURRENT_TMP" "$ROOT/opt/routly/current"
@@ -178,6 +191,7 @@ schema_check=$("$PSQL" "$database_url" -v ON_ERROR_STOP=1 -At -c \
 "$SYSTEMCTL" daemon-reload
 "$SYSTEMCTL" enable --now routly-api.service
 "$SYSTEMCTL" enable --now nginx
+"$SYSTEMCTL" reload nginx
 env_ready=0
 if [[ -f "$ROOT/etc/routly/routly.env" ]] &&
    grep -qE '^ROUTLY_CONTROL_URL=https://' "$ROOT/etc/routly/routly.env" &&

@@ -6,6 +6,9 @@ umask 077
 REPOSITORY=${ROUTLY_DISTRIBUTION_REPOSITORY:-Routly502/routly-node-installer}
 API_URL="https://api.github.com/repos/$REPOSITORY/releases/latest"
 RAW_URL="https://raw.githubusercontent.com/$REPOSITORY/main"
+# This value is supplied by the published installer artifact/build pipeline.
+# It is deliberately independent of any license payload.
+TRUSTED_CONTROL_URL=${ROUTLY_BOOTSTRAP_CONTROL_URL:-https://routly-isp-management.replit.app}
 WORK=
 ROOT=${ROUTLY_FILESYSTEM_ROOT:-/}
 ROOT=${ROOT%/}
@@ -89,6 +92,12 @@ fi
 
 WORK=$(mktemp -d /tmp/routly-bootstrap.XXXXXX)
 install -d -m 0750 "$ETC_ROUTLY"
+INSTANCE_ID_FILE="$ETC_ROUTLY/instance-id"
+if [ ! -s "$INSTANCE_ID_FILE" ]; then
+  umask 077
+  openssl rand -hex 32 > "$INSTANCE_ID_FILE"
+  chmod 600 "$INSTANCE_ID_FILE"
+fi
 if [[ -s "$ETC_ROUTLY/bootstrap-enrollment.json" ]]; then
   say "Reutilizando la inscripción segura de un intento anterior"
   cp "$ETC_ROUTLY/bootstrap-enrollment.json" "$WORK/enrollment.json"
@@ -113,9 +122,44 @@ else
   if [[ ${ROUTLY_TEST_MODE:-0} == 1 && -n ${ROUTLY_TEST_ENROLLMENT_CODE:-} ]]; then
     ENROLLMENT_CODE=$ROUTLY_TEST_ENROLLMENT_CODE
   else
+    # Accepts both the legacy rly1 one-time code and the stable rlic1 license key.
     read_masked 'Código de activación: ' || fail "No se pudo leer el código de activación."
     ENROLLMENT_CODE=$REPLY
   fi
+  if [[ "$ENROLLMENT_CODE" == rlic1.*.* ]]; then
+    LICENSE_PART=${ENROLLMENT_CODE#rlic1.}
+    LICENSE_PAYLOAD=${LICENSE_PART%%.*}
+    CONTROL_URL=$(python3 - "$LICENSE_PAYLOAD" <<'PY'
+import base64, json, sys
+try:
+    value = sys.argv[1]
+    data = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
+    url = data["controlUrl"]
+    print(url)
+except Exception:
+    raise SystemExit("La llave de licencia no contiene un origen válido")
+PY
+    )
+    [[ -n "$TRUSTED_CONTROL_URL" && "$CONTROL_URL" == "$TRUSTED_CONTROL_URL" ]] ||
+      fail "La llave de licencia no coincide con el origen oficial de Routly Control."
+    [[ "$CONTROL_URL" == https://* && "$CONTROL_URL" != *[$' \t\r\n']* ]] ||
+      fail "La llave de licencia no contiene un origen HTTPS válido."
+    python3 - "$WORK/license-claim.json" "$ENROLLMENT_CODE" "$INSTANCE_ID_FILE" <<'PY'
+import json, sys
+with open(sys.argv[3], encoding="utf-8") as source:
+    instance_id = source.read().strip()
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump({"licenseKey": sys.argv[2], "serverInstanceId": instance_id}, output)
+PY
+    curl -fsS --proto '=https' --tlsv1.2 \
+      -H 'content-type: application/json' \
+      --data-binary "@$WORK/license-claim.json" \
+      "$CONTROL_URL/api/control/licensing/claim" \
+      -o "$WORK/enrollment.json" ||
+      fail "Routly Control rechazó la llave de licencia o no está disponible."
+    chmod 0600 "$WORK/enrollment.json"
+    install -m 0600 "$WORK/enrollment.json" "$ETC_ROUTLY/bootstrap-enrollment.json"
+  else
   [[ "$ENROLLMENT_CODE" == rly1.*.* ]] || fail "El código de activación no tiene un formato válido."
   CONTROL_PART=${ENROLLMENT_CODE#rly1.}
   CONTROL_PART=${CONTROL_PART%%.*}
@@ -150,6 +194,7 @@ with os.fdopen(fd, "w", encoding="utf-8") as output:
   chmod 0600 "$WORK/enrollment.json"
   install -m 0600 "$WORK/enrollment.json" "$ETC_ROUTLY/bootstrap-enrollment.json"
   rm -f "$ETC_ROUTLY/bootstrap-enrollment-request.json"
+  fi
 fi
 
 say "Localizando el último Routly Node publicado"
@@ -189,6 +234,13 @@ if [[ $PARTIAL_INSTALL == 1 ]]; then
 else
 SESSION_SECRET=$(openssl rand -hex 48)
 ADMIN_PASSWORD=$(openssl rand -base64 24 | tr -d '\n' | tr '/+' '_-')
+# Host identity is deliberately outside PostgreSQL so a cloned database cannot
+# clone the server identity. Preserve this file across upgrades/re-installs.
+if [ ! -s "$INSTANCE_ID_FILE" ]; then
+  umask 077
+  openssl rand -hex 32 > "$INSTANCE_ID_FILE"
+  chmod 600 "$INSTANCE_ID_FILE"
+fi
   python3 - "$WORK/enrollment.json" "$ETC_ROUTLY/enrollment.env" "$ETC_ROUTLY/release-signing-public.pem" <<'PY'
 import base64, json, os, re, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -250,6 +302,7 @@ ROUTLY_INITIAL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
 ROUTLY_CONTROL_URL=${ROUTLY_CONTROL_URL}
 ROUTLY_INSTALLATION_ID=${ROUTLY_INSTALLATION_ID}
 ROUTLY_ACTIVATION_SECRET=${ROUTLY_ACTIVATION_SECRET}
+ROUTLY_SERVER_INSTANCE_ID=$(cat "$ETC_ROUTLY/instance-id")
 ROUTLY_LICENSE_KEY_ID=${ROUTLY_LICENSE_KEY_ID}
 ROUTLY_LICENSE_PUBLIC_KEY=
 ROUTLY_LICENSE_PUBLIC_KEY_BASE64=${ROUTLY_LICENSE_PUBLIC_KEY_BASE64}
