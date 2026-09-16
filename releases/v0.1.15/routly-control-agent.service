@@ -1,0 +1,30 @@
+[Unit]
+Description=Routly Control update agent
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/routly/current/agent/routly-control-agent.mjs
+ConditionPathIsExecutable=/usr/bin/routly-package-updater
+
+[Service]
+Type=simple
+User=routly
+Group=routly
+WorkingDirectory=/opt/routly/current/agent
+EnvironmentFile=-/etc/routly/routly.env
+Environment=ROUTLY_CONTROL_STATE_FILE=/var/lib/routly/agent/state.json
+ExecStart=/usr/bin/node /opt/routly/current/agent/routly-control-agent.mjs
+Restart=on-failure
+RestartSec=10
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# The unprivileged agent itself can only write its state directory. The other
+# root-owned paths are writable solely by the fixed sudo-authorized updater,
+# which inherits this mount namespace during package activation and rollback.
+ReadWritePaths=/var/lib/routly/agent /var/lib/routly/updater /var/lib/routly/backups /opt/routly /etc/routly /etc/nginx /etc/sudoers.d /usr/bin /usr/lib/routly /usr/lib/systemd/system /usr/lib/sysusers.d /usr/lib/tmpfiles.d /run/lock
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
