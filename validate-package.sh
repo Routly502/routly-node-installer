@@ -115,6 +115,31 @@ if (JSON.stringify(manifest.components) !== JSON.stringify(expectedComponents)) 
   throw Error("invalid component paths");
 }
 if (!Array.isArray(manifest.files)) throw Error("manifest files must be an array");
+const allowedHostIntegrations = new Map([
+  ["etc/nginx/sites-available/routly.conf", ["etc/nginx/sites-available/routly.conf", 0o644]],
+  ["etc/sudoers.d/routly-package-updater", ["etc/sudoers.d/routly-package-updater", 0o440]],
+  ["usr/bin/routly-migrate.mjs", ["usr/bin/routly-migrate", 0o755]],
+  ["usr/bin/routly-migration-plan.mjs", ["usr/bin/routly-migration-plan.mjs", 0o644]],
+  ["usr/bin/routly-package-updater.mjs", ["usr/bin/routly-package-updater", 0o755]],
+   ["usr/bin/routly-uninstall", ["usr/bin/routly-uninstall", 0o755]],
+  ["usr/lib/routly/validate-package.sh", ["usr/lib/routly/validate-package.sh", 0o755]],
+  ["usr/lib/systemd/system/routly-api.service", ["usr/lib/systemd/system/routly-api.service", 0o644]],
+  ["usr/lib/systemd/system/routly-control-agent.service", ["usr/lib/systemd/system/routly-control-agent.service", 0o644]],
+  ["usr/lib/sysusers.d/routly.conf", ["usr/lib/sysusers.d/routly.conf", 0o644]],
+  ["usr/lib/tmpfiles.d/routly.conf", ["usr/lib/tmpfiles.d/routly.conf", 0o644]],
+]);
+if (!Array.isArray(manifest.hostIntegrations)) throw Error("invalid host integration list");
+const integrationSources = new Set();
+const integrationTargets = new Set();
+for (const integration of manifest.hostIntegrations) {
+  const allowed = allowedHostIntegrations.get(integration?.source);
+  if (!allowed || integration.target !== allowed[0] || integration.mode !== allowed[1] ||
+      integrationSources.has(integration.source) || integrationTargets.has(integration.target)) {
+    throw Error("invalid host integration mapping");
+  }
+  integrationSources.add(integration.source);
+  integrationTargets.add(integration.target);
+}
 const allowed = [
   `opt/routly/releases/${version}/`,
   "etc/routly/",
@@ -144,6 +169,9 @@ const expected = regular.filter(file => file !== manifestRelative).sort();
 const actual = [...listed].sort();
 if (JSON.stringify(actual) !== JSON.stringify(expected)) {
   throw Error("manifest does not exactly cover every regular package file");
+}
+for (const integration of manifest.hostIntegrations) {
+  if (!listed.has(integration.source)) throw Error(`host integration is not covered by manifest: ${integration.source}`);
 }
 NODE
 echo "Package validation passed: $ARCHIVE"

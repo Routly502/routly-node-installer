@@ -138,6 +138,9 @@ if [[ -f "$STAGE/usr/bin/routly-package-updater.mjs" ]]; then
   install_file "$STAGE/usr/lib/routly/validate-package.sh" "$ROOT/usr/lib/routly/validate-package.sh" 0755
   install_file "$STAGE/etc/sudoers.d/routly-package-updater" "$ROOT/etc/sudoers.d/routly-package-updater" 0440
 fi
+if [[ -f "$STAGE/usr/bin/routly-uninstall" ]]; then
+  install_file "$STAGE/usr/bin/routly-uninstall" "$ROOT/usr/bin/routly-uninstall" 0755
+fi
 if [[ -f "$STAGE/usr/bin/routly-migrate.mjs" ]]; then
   install_file "$STAGE/usr/bin/routly-migrate.mjs" "$ROOT/usr/bin/routly-migrate" 0755
 fi
